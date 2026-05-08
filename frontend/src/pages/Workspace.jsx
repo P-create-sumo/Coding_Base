@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import apiClient from "@/lib/api";
+import apiClient, { API } from "@/lib/api";
 import { toast } from "sonner";
 import ChatPanel from "@/components/ChatPanel";
 import PreviewPanel from "@/components/PreviewPanel";
-import { CaretLeft, Lightning, Sparkle } from "@phosphor-icons/react";
+import VersionHistory from "@/components/VersionHistory";
+import { CaretLeft, Lightning, Sparkle, ClockCounterClockwise, DownloadSimple } from "@phosphor-icons/react";
 
 export default function Workspace() {
   const { id } = useParams();
@@ -14,13 +15,16 @@ export default function Workspace() {
 
   const [project, setProject] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [files, setFiles] = useState([]);
+  const [activeFile, setActiveFile] = useState("App.jsx");
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [code, setCode] = useState("");
+  const [streamingText, setStreamingText] = useState(""); // current assistant streaming buffer
   const [autoTriggered, setAutoTriggered] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
   const templatesRef = useRef([]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [pRes, mRes, tRes] = await Promise.all([
         apiClient.get(`/projects/${id}`),
@@ -29,32 +33,32 @@ export default function Workspace() {
       ]);
       setProject(pRes.data);
       setMessages(mRes.data);
-      setCode(pRes.data.current_code || "");
+      const projectFiles = pRes.data.files?.length
+        ? pRes.data.files
+        : pRes.data.current_code
+          ? [{ path: "App.jsx", content: pRes.data.current_code }]
+          : [];
+      setFiles(projectFiles);
       templatesRef.current = tRes.data;
     } catch (e) {
       console.error(e);
+      if (e.response?.status === 401) {
+        navigate("/login");
+        return;
+      }
       toast.error("Failed to load project");
       navigate("/");
     } finally {
       setLoading(false);
     }
-  };
+  }, [id, navigate]);
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [fetchData]);
 
-  // Auto-generate from template on first load
   useEffect(() => {
-    if (
-      !autoTriggered &&
-      !loading &&
-      templateId &&
-      messages.length === 0 &&
-      project &&
-      templatesRef.current.length > 0
-    ) {
+    if (!autoTriggered && !loading && templateId && messages.length === 0 && project && templatesRef.current.length > 0) {
       const tpl = templatesRef.current.find((t) => t.id === templateId);
       if (tpl) {
         setAutoTriggered(true);
@@ -67,8 +71,8 @@ export default function Workspace() {
   const sendPrompt = async (prompt) => {
     if (!prompt.trim() || generating) return;
     setGenerating(true);
+    setStreamingText("");
 
-    // Optimistic user message
     const tempUserMsg = {
       id: "tmp_" + Date.now(),
       project_id: id,
@@ -79,37 +83,134 @@ export default function Workspace() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const { data } = await apiClient.post(`/projects/${id}/generate`, { prompt });
-      setMessages((prev) => {
-        const filtered = prev.filter((m) => m.id !== tempUserMsg.id);
-        return [...filtered, data.user_message, data.assistant_message];
+      const response = await fetch(`${API}/projects/${id}/generate-stream`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
       });
-      if (data.code) {
-        setCode(data.code);
-        toast.success("Code generated");
-      } else {
-        toast.warning("No code block in response");
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let realUserMsg = null;
+      let finalData = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          const line = part.trim();
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload) continue;
+          try {
+            const evt = JSON.parse(payload);
+            if (evt.type === "user") {
+              realUserMsg = evt.message;
+              setMessages((prev) =>
+                prev.map((m) => (m.id === tempUserMsg.id ? evt.message : m))
+              );
+            } else if (evt.type === "chunk") {
+              setStreamingText((prev) => prev + evt.text);
+            } else if (evt.type === "done") {
+              finalData = evt;
+            } else if (evt.type === "error") {
+              throw new Error(evt.detail || "Stream error");
+            }
+          } catch (parseErr) {
+            // ignore malformed
+          }
+        }
+      }
+
+      if (finalData) {
+        setMessages((prev) => {
+          const filtered = prev.filter((m) => m.id !== tempUserMsg.id);
+          // Ensure real user msg present
+          const hasUser = realUserMsg ? filtered.some((m) => m.id === realUserMsg.id) : true;
+          const base = hasUser || !realUserMsg ? filtered : [...filtered, realUserMsg];
+          return [...base, finalData.assistant_message];
+        });
+        if (finalData.files?.length) {
+          setFiles(finalData.files);
+          if (!finalData.files.find((f) => f.path === activeFile)) {
+            setActiveFile(finalData.files[0].path);
+          }
+          toast.success("Code generated");
+        } else if (finalData.code) {
+          setFiles([{ path: "App.jsx", content: finalData.code }]);
+          toast.success("Code generated");
+        } else {
+          toast.warning("No code in response");
+        }
       }
     } catch (e) {
       console.error(e);
-      toast.error(e.response?.data?.detail || "Generation failed");
+      toast.error(e.message || "Generation failed");
       setMessages((prev) => prev.filter((m) => m.id !== tempUserMsg.id));
     } finally {
       setGenerating(false);
+      setStreamingText("");
     }
   };
 
   const updateCodeTimer = useRef(null);
-  const updateCode = (newCode) => {
-    setCode(newCode);
+  const updateFileContent = (path, newContent) => {
+    setFiles((prev) =>
+      prev.map((f) => (f.path === path ? { ...f, content: newContent } : f))
+    );
     if (updateCodeTimer.current) clearTimeout(updateCodeTimer.current);
     updateCodeTimer.current = setTimeout(async () => {
       try {
-        await apiClient.put(`/projects/${id}/code`, { code: newCode });
+        await apiClient.put(`/projects/${id}/code`, { code: newContent, path });
       } catch (e) {
         console.error(e);
       }
     }, 600);
+  };
+
+  const handleRollback = async (versionId) => {
+    try {
+      const { data } = await apiClient.post(`/projects/${id}/rollback/${versionId}`);
+      setFiles(data.files || []);
+      if (data.files?.length && !data.files.find((f) => f.path === activeFile)) {
+        setActiveFile(data.files[0].path);
+      }
+      setShowVersions(false);
+      toast.success("Rolled back to version");
+    } catch (e) {
+      toast.error("Rollback failed");
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const response = await fetch(`${API}/projects/${id}/export`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Export failed");
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const safeName = (project?.name || "project").toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 40);
+      a.download = `${safeName}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Exported as .zip");
+    } catch (e) {
+      toast.error("Export failed");
+    }
   };
 
   if (loading) {
@@ -124,9 +225,8 @@ export default function Workspace() {
 
   return (
     <div className="h-screen w-full bg-[#050505] flex flex-col overflow-hidden" data-testid="workspace-page">
-      {/* Header */}
       <header className="flex items-center justify-between px-4 md:px-6 py-3 border-b border-[#2A2A2A] bg-[#050505]/80 backdrop-blur-xl flex-shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <button
             data-testid="back-btn"
             onClick={() => navigate("/")}
@@ -141,7 +241,7 @@ export default function Workspace() {
           <div className="min-w-0">
             <div className="font-heading font-bold text-base tracking-tight truncate">{project?.name}</div>
             <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA] flex items-center gap-2">
-              <span>claude sonnet 4.5</span>
+              <span>claude sonnet 4.5 · streaming</span>
               {generating && (
                 <span className="text-[#FFCC00] flex items-center gap-1">
                   <Sparkle size={10} weight="fill" className="ascii-pulse" /> generating
@@ -150,21 +250,55 @@ export default function Workspace() {
             </div>
           </div>
         </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <button
+            data-testid="versions-btn"
+            onClick={() => setShowVersions(true)}
+            className="border border-[#2A2A2A] hover:border-[#FFCC00] hover:text-[#FFCC00] p-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em]"
+            title="Version history"
+          >
+            <ClockCounterClockwise size={14} weight="bold" />
+            <span className="hidden md:inline">history</span>
+          </button>
+          <button
+            data-testid="export-btn"
+            onClick={handleExport}
+            className="border border-[#2A2A2A] hover:border-[#FF3B30] hover:text-[#FF3B30] p-2 flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em]"
+            title="Export as .zip"
+            disabled={!files.length}
+          >
+            <DownloadSimple size={14} weight="bold" />
+            <span className="hidden md:inline">.zip</span>
+          </button>
+        </div>
       </header>
 
-      {/* Workspace */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
         <div className="w-full md:w-[38%] flex-shrink-0 border-r border-[#2A2A2A] flex flex-col min-h-0 max-h-[40vh] md:max-h-none">
           <ChatPanel
             messages={messages}
             onSend={sendPrompt}
             generating={generating}
+            streamingText={streamingText}
           />
         </div>
         <div className="flex-1 flex flex-col min-h-0">
-          <PreviewPanel code={code} onCodeChange={updateCode} />
+          <PreviewPanel
+            files={files}
+            activeFile={activeFile}
+            onActiveFileChange={setActiveFile}
+            onCodeChange={updateFileContent}
+          />
         </div>
       </div>
+
+      {showVersions && (
+        <VersionHistory
+          projectId={id}
+          onClose={() => setShowVersions(false)}
+          onRollback={handleRollback}
+        />
+      )}
     </div>
   );
 }

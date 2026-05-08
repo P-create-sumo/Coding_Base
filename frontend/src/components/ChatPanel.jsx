@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PaperPlaneTilt, User, Sparkle, Code } from "@phosphor-icons/react";
 
-export default function ChatPanel({ messages, onSend, generating }) {
+export default function ChatPanel({ messages, onSend, generating, streamingText }) {
   const [input, setInput] = useState("");
   const scrollRef = useRef(null);
 
@@ -9,7 +9,7 @@ export default function ChatPanel({ messages, onSend, generating }) {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [messages, generating]);
+  }, [messages, generating, streamingText]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -25,9 +25,14 @@ export default function ChatPanel({ messages, onSend, generating }) {
     }
   };
 
+  // Strip code/file blocks from streaming preview for clarity
+  const cleanStreamingText = streamingText
+    ?.replace(/===FILE:[\s\S]*?===END===/g, "")
+    .replace(/```[\s\S]*?```/g, "")
+    .trim();
+
   return (
     <div className="h-full flex flex-col bg-[#050505] min-h-0" data-testid="chat-panel">
-      {/* Header */}
       <div className="px-5 py-3 border-b border-[#2A2A2A] flex items-center justify-between flex-shrink-0">
         <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA]">/ chat</div>
         <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA]">
@@ -35,7 +40,6 @@ export default function ChatPanel({ messages, onSend, generating }) {
         </div>
       </div>
 
-      {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-5 min-h-0" data-testid="chat-messages">
         {messages.length === 0 && !generating && (
           <div className="h-full flex flex-col items-center justify-center text-center px-4">
@@ -49,14 +53,14 @@ export default function ChatPanel({ messages, onSend, generating }) {
                 "A pricing page with 3 tiers",
                 "A dashboard with KPI cards",
                 "A todo list with categories",
-              ].map((suggestion) => (
+              ].map((s) => (
                 <button
-                  key={suggestion}
-                  data-testid={`suggestion-${suggestion.slice(0, 10)}`}
-                  onClick={() => onSend(suggestion)}
+                  key={s}
+                  data-testid={`suggestion-${s.slice(0, 10)}`}
+                  onClick={() => onSend(s)}
                   className="w-full text-left text-xs font-mono text-[#A1A1AA] border border-[#2A2A2A] hover:border-[#FF3B30] hover:text-[#F5F5F5] px-3 py-2 transition-colors"
                 >
-                  → {suggestion}
+                  → {s}
                 </button>
               ))}
             </div>
@@ -68,22 +72,33 @@ export default function ChatPanel({ messages, onSend, generating }) {
         ))}
 
         {generating && (
-          <div className="flex gap-3 slide-up">
+          <div className="flex gap-3 slide-up" data-testid="streaming-bubble">
             <div className="w-7 h-7 bg-[#FF3B30] flex items-center justify-center flex-shrink-0">
               <Sparkle size={14} weight="fill" color="#050505" />
             </div>
-            <div className="flex-1 pt-1">
+            <div className="flex-1 pt-1 min-w-0">
               <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#FF3B30] mb-2">/ assistant</div>
-              <div className="font-mono text-sm text-[#A1A1AA]">
-                <span className="ascii-pulse">▓▓▓▓▓░░░░░</span> thinking...
-                <span className="cursor-blink ml-1">█</span>
-              </div>
+              {cleanStreamingText ? (
+                <div className="text-sm text-[#F5F5F5] whitespace-pre-wrap break-words leading-relaxed">
+                  {cleanStreamingText}
+                  <span className="cursor-blink ml-0.5 text-[#FF3B30]">█</span>
+                </div>
+              ) : (
+                <div className="font-mono text-sm text-[#A1A1AA]">
+                  <span className="ascii-pulse">▓▓▓▓▓░░░░░</span> thinking
+                  <span className="cursor-blink ml-1">█</span>
+                </div>
+              )}
+              {streamingText?.includes("===FILE:") && (
+                <div className="mt-2 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-[#FFCC00] border border-[#2A2A2A] px-2 py-1">
+                  <Code size={10} weight="bold" /> writing files...
+                </div>
+              )}
             </div>
           </div>
         )}
       </div>
 
-      {/* Input */}
       <form onSubmit={handleSubmit} className="border-t border-[#2A2A2A] p-4 flex-shrink-0 bg-[#050505]">
         <div className="border border-[#2A2A2A] focus-within:border-[#FF3B30] bg-[#0D0D0D] flex items-end gap-2 p-2">
           <textarea
@@ -107,7 +122,7 @@ export default function ChatPanel({ messages, onSend, generating }) {
           </button>
         </div>
         <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.2em] text-[#52525B]">
-          enter to send · shift+enter for newline
+          enter to send · shift+enter for newline · streaming on
         </div>
       </form>
     </div>
@@ -116,36 +131,27 @@ export default function ChatPanel({ messages, onSend, generating }) {
 
 function MessageBubble({ msg }) {
   const isUser = msg.role === "user";
-  // Strip code blocks from displayed assistant content for clarity (keep only prose)
   const visibleContent = isUser
     ? msg.content
-    : msg.content.replace(/```[\s\S]*?```/g, "").trim() || "Generated code →";
+    : msg.content
+        ?.replace(/===FILE:[\s\S]*?===END===/g, "")
+        .replace(/```[\s\S]*?```/g, "")
+        .trim() || "Generated code →";
 
   return (
     <div className="flex gap-3 slide-up" data-testid={`message-${msg.id}`}>
-      <div
-        className={`w-7 h-7 flex items-center justify-center flex-shrink-0 ${
-          isUser ? "bg-[#F5F5F5]" : "bg-[#FF3B30]"
-        }`}
-      >
-        {isUser ? (
-          <User size={14} weight="bold" color="#050505" />
-        ) : (
-          <Sparkle size={14} weight="fill" color="#050505" />
-        )}
+      <div className={`w-7 h-7 flex items-center justify-center flex-shrink-0 ${isUser ? "bg-[#F5F5F5]" : "bg-[#FF3B30]"}`}>
+        {isUser ? <User size={14} weight="bold" color="#050505" /> : <Sparkle size={14} weight="fill" color="#050505" />}
       </div>
       <div className="flex-1 min-w-0">
-        <div
-          className={`font-mono text-[10px] uppercase tracking-[0.2em] mb-2 ${
-            isUser ? "text-[#A1A1AA]" : "text-[#FF3B30]"
-          }`}
-        >
+        <div className={`font-mono text-[10px] uppercase tracking-[0.2em] mb-2 ${isUser ? "text-[#A1A1AA]" : "text-[#FF3B30]"}`}>
           / {isUser ? "user" : "assistant"}
         </div>
         <div className="text-sm text-[#F5F5F5] whitespace-pre-wrap break-words leading-relaxed">{visibleContent}</div>
-        {!isUser && msg.code && (
+        {!isUser && (msg.code || msg.files?.length) && (
           <div className="mt-2 inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em] text-[#FFCC00] border border-[#2A2A2A] px-2 py-1">
-            <Code size={10} weight="bold" /> code generated
+            <Code size={10} weight="bold" />
+            {msg.files?.length ? `${msg.files.length} file${msg.files.length === 1 ? "" : "s"} generated` : "code generated"}
           </div>
         )}
       </div>

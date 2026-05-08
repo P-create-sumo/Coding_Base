@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { LiveProvider, LivePreview, LiveError, LiveEditor } from "react-live";
-import { Eye, Code, Copy, Check } from "@phosphor-icons/react";
+import { Eye, Code, Copy, Check, FileCode } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const PRESET_SCOPE = { React };
@@ -16,20 +16,25 @@ const EMPTY_CODE = `const App = () => (
 );
 render(<App />);`;
 
-export default function PreviewPanel({ code, onCodeChange }) {
+export default function PreviewPanel({ files, activeFile, onActiveFileChange, onCodeChange }) {
   const [tab, setTab] = useState("preview");
   const [copied, setCopied] = useState(false);
 
-  const displayedCode = code && code.trim() ? code : EMPTY_CODE;
+  const fileList = files?.length ? files : [];
+  const currentFile = fileList.find((f) => f.path === activeFile) || fileList[0];
+  const previewFile = fileList.find((f) => f.path.toLowerCase().endsWith("app.jsx")) || fileList[0];
+
+  const previewCode = previewFile?.content?.trim() || EMPTY_CODE;
+  const editorCode = currentFile?.content || EMPTY_CODE;
 
   const copyCode = async () => {
     try {
+      const text = currentFile?.content || previewCode;
       if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(displayedCode);
+        await navigator.clipboard.writeText(text);
       } else {
-        // Fallback for non-secure contexts
         const ta = document.createElement("textarea");
-        ta.value = displayedCode;
+        ta.value = text;
         ta.style.position = "fixed";
         ta.style.opacity = "0";
         document.body.appendChild(ta);
@@ -41,13 +46,12 @@ export default function PreviewPanel({ code, onCodeChange }) {
       toast.success("Code copied");
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      toast.error("Copy not allowed in this context");
+      toast.error("Copy not allowed");
     }
   };
 
   return (
     <div className="h-full flex flex-col bg-[#050505] min-h-0" data-testid="preview-panel">
-      {/* Tabs */}
       <div className="flex items-center border-b border-[#2A2A2A] bg-[#050505] flex-shrink-0">
         <button
           data-testid="tab-preview"
@@ -79,21 +83,37 @@ export default function PreviewPanel({ code, onCodeChange }) {
           title="Copy code"
         >
           {copied ? (
-            <>
-              <Check size={12} weight="bold" className="text-[#34C759]" /> copied
-            </>
+            <><Check size={12} weight="bold" className="text-[#34C759]" /> copied</>
           ) : (
-            <>
-              <Copy size={12} weight="bold" /> copy
-            </>
+            <><Copy size={12} weight="bold" /> copy</>
           )}
         </button>
       </div>
 
-      {/* Content */}
+      {/* File tabs (only in code mode and when multi-file) */}
+      {tab === "code" && fileList.length > 0 && (
+        <div className="flex items-center border-b border-[#2A2A2A] bg-[#0D0D0D] flex-shrink-0 overflow-x-auto" data-testid="file-tabs">
+          {fileList.map((f) => (
+            <button
+              key={f.path}
+              data-testid={`file-tab-${f.path}`}
+              onClick={() => onActiveFileChange?.(f.path)}
+              className={`px-4 py-2 font-mono text-xs whitespace-nowrap border-r border-[#2A2A2A] flex items-center gap-2 ${
+                f.path === activeFile
+                  ? "bg-[#050505] text-[#F5F5F5]"
+                  : "text-[#A1A1AA] hover:text-[#F5F5F5] hover:bg-[#1A1A1A]"
+              }`}
+            >
+              <FileCode size={12} weight={f.path === activeFile ? "fill" : "regular"} />
+              {f.path}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden min-h-0 relative">
         <LiveProvider
-          code={displayedCode}
+          code={tab === "preview" ? previewCode : editorCode}
           scope={PRESET_SCOPE}
           noInline
           enableTypeScript={false}
@@ -110,13 +130,15 @@ export default function PreviewPanel({ code, onCodeChange }) {
               <div className="flex-1 overflow-auto">
                 <LiveEditor
                   className="live-editor"
-                  onChange={(val) => onCodeChange?.(val)}
+                  onChange={(val) => currentFile && onCodeChange?.(currentFile.path, val)}
                   style={{ minHeight: "100%" }}
                 />
               </div>
-              <div className="border-t border-[#2A2A2A]">
-                <LiveError className="live-error" />
-              </div>
+              {currentFile?.path?.toLowerCase().endsWith(".jsx") && (
+                <div className="border-t border-[#2A2A2A]">
+                  <LiveError className="live-error" />
+                </div>
+              )}
             </div>
           )}
         </LiveProvider>
