@@ -1,0 +1,104 @@
+{
+  "theme": "dark",
+  "archetype": "4",
+  "archetype_name": "Swiss & High-Contrast",
+  "color_palette": {
+    "background": "#050505",
+    "surface": "#121212",
+    "surface_hover": "#1A1A1A",
+    "border": "#2A2A2A",
+    "text_primary": "#F5F5F5",
+    "text_secondary": "#A1A1AA",
+    "primary_accent": "#FF3B30",
+    "secondary_accent": "#FFCC00",
+    "tertiary_accent": "#002FA7",
+    "code_bg": "#0D0D0D",
+    "error": "#FF3B30",
+    "success": "#34C759"
+  },
+  "typography": {
+    "heading_font": "Chivo",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-bold",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-semibold",
+      "h4": "text-lg sm:text-xl tracking-tight font-medium",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm",
+      "tiny": "text-xs",
+      "overline": "text-xs uppercase tracking-[0.2em] font-bold"
+    }
+  },
+  "spacing_and_layout": {
+    "container_padding": "p-6 md:p-8 lg:p-12",
+    "bento_gap": "gap-4 md:gap-6",
+    "radius": "rounded-none",
+    "border_style": "border border-[#2A2A2A]",
+    "layout_mode": "The Control Room Grid",
+    "workspace_layout": "h-screen w-full flex flex-col md:flex-row overflow-hidden",
+    "sidebar_width": "w-full md:w-64 flex-shrink-0",
+    "chat_panel_width": "w-full md:w-[35%] flex-shrink-0 border-r border-[#2A2A2A]",
+    "preview_panel_width": "w-full md:flex-1 h-full"
+  },
+  "surface_strategies": {
+    "header": "bg-[#050505]/80 backdrop-blur-xl border-b border-[#2A2A2A]",
+    "cards": "bg-[#121212] border border-[#2A2A2A] hover:border-[#FF3B30] transition-colors duration-200",
+    "inputs": "bg-[#050505] border border-[#2A2A2A] focus:border-[#FF3B30] focus:ring-1 focus:ring-[#FF3B30] text-[#F5F5F5]",
+    "buttons_primary": "bg-[#F5F5F5] text-[#050505] hover:bg-[#FF3B30] hover:text-[#F5F5F5] font-bold uppercase tracking-wide",
+    "buttons_secondary": "bg-transparent border border-[#2A2A2A] text-[#F5F5F5] hover:border-[#F5F5F5]",
+    "code_block": "bg-[#0D0D0D] border border-[#2A2A2A] font-mono text-sm p-4 overflow-x-auto"
+  },
+  "components": {
+    "ui_library": "shadcn/ui",
+    "required_customizations": [
+      "Remove border-radius from Shadcn components to match Swiss Brutalist look (rounded-none)",
+      "Use intense contrast for active states",
+      "Inputs and textareas should have explicit focus states with Primary Accent",
+      "Tabs should use sharp borders instead of soft pills"
+    ],
+    "icons": {
+      "library": "@phosphor-icons/react",
+      "style": "regular or bold",
+      "install_command": "yarn add @phosphor-icons/react"
+    }
+  },
+  "motion_and_interactions": {
+    "hover_states": "Crisp, fast transitions. Borders change from subtle grey to Primary/Secondary Accent.",
+    "button_active": "Scale down slightly (scale-95).",
+    "page_transitions": "Fade and slight slide-up (framer-motion).",
+    "loading": "Use monospace ASCII loaders or sharp pulsing blocks."
+  },
+  "images": {
+    "marketing_template_thumbnail": {
+      "url": "https://images.pexels.com/photos/27141307/pexels-photo-27141307.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Sleek futuristic digital interface showcasing technology and precision with vibrant design elements.",
+      "usage": "Use as thumbnail for the 'Marketing Campaign Dashboard' template"
+    },
+    "smart_contract_thumbnail": {
+      "url": "https://images.pexels.com/photos/27141317/pexels-photo-27141317.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Conceptual display of futuristic user interface with percentages and symbols.",
+      "usage": "Use as thumbnail for the 'Smart Contract Generator' template"
+    },
+    "data_viz_thumbnail": {
+      "url": "https://images.unsplash.com/photo-1526628953301-3e589a6a8b74?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA4Mzl8MHwxfHNlYXJjaHw0fHxhYnN0cmFjdCUyMGRhc2hib2FyZCUyMGdyYXBoaWN8ZW58MHx8fHwxNzc4MjcyMjcwfDA&ixlib=rb-4.1.0&q=85",
+      "description": "turned on monitoring screen",
+      "usage": "Use as thumbnail for 'Data Visualization' template"
+    }
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure minimum 4.5:1 ratio for text. Grey text must not be too dark.",
+    "test_ids": "All interactive elements must have data-testid (e.g., data-testid='chat-input', data-testid='send-prompt-btn')"
+  },
+  "instructions_to_main_agent": [
+    "Build a split-pane layout for the main IDE view: Left side is Chat, Right side is Preview/Code.",
+    "The landing page should list templates and previous projects.",
+    "Use react-live or iframe injection for the code preview window.",
+    "In the Chat interface, include an input at the bottom with a submit button.",
+    "Use pure HTML/Tailwind for the landing page layout to ensure bento grid spacing. Use Shadcn components heavily customized for the workspace UI (tabs, code editor, chat bubbles).",
+    "Apply 'rounded-none' to all containers and buttons to maintain the Swiss aesthetic.",
+    "Use Phosphor Icons for the UI elements.",
+    "Ensure 'JetBrains Mono' is used for any code-related text or technical metadata."
+  ]
+}
