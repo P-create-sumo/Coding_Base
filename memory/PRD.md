@@ -1,54 +1,62 @@
 # FORGE — AI App Builder
 
 ## Original Problem Statement
-Build a SaaS platform where users can describe a web app via a chat interface. Use Claude 3.5 Sonnet to generate React code, save in a database linked to the user's project, and render via react-live preview. User asked for a platform similar to Emergent.sh, with pre-made templates for marketing campaign dashboards and smart contract generators for non-developers.
+Build a SaaS platform where users can describe a web app via a chat interface. Use Claude 3.5 Sonnet to generate React code, save in a database linked to the user's project, render via react-live preview. User asked for a platform similar to Emergent.sh, with pre-made templates for marketing campaign dashboards and smart contract generators for non-developers.
 
 ## Architecture
-- **Backend**: FastAPI + MongoDB + emergentintegrations (Claude Sonnet 4.5 — `claude-sonnet-4-5-20250929`)
-- **Frontend**: React 19 + TailwindCSS + shadcn/ui + react-live + @phosphor-icons/react
-- **Auth**: Single-user mode using `X-User-Id` header sourced from localStorage (no login)
+- **Backend**: FastAPI + MongoDB + litellm (direct call to Emergent proxy for streaming) + emergentintegrations (utils only)
+- **Frontend**: React 19 + TailwindCSS + react-live + @phosphor-icons/react
+- **Auth**: Emergent Google Auth (httpOnly cookie + 7-day session_token)
 - **Design**: Swiss/Brutalist dark theme — Chivo / IBM Plex Sans / JetBrains Mono fonts; sharp corners; red/yellow accents
 
 ## User Personas
 - **Non-technical creators** wanting to bootstrap UIs without coding
-- **Marketing/Web3 teams** needing quick prototypes (campaign dashboards, smart-contract UIs)
-- **Developers** using it for quick scaffolding & ideation
+- **Marketing/Web3 teams** needing quick prototypes
+- **Developers** for ideation & scaffolding
 
 ## Implemented (2026-02-08)
+
+### v1.0
 - Landing page: hero, engine stats, 4-template gallery, projects list
-- Project CRUD (`/api/projects` + GET/POST/DELETE/code update)
-- Chat-based AI generation via Claude Sonnet 4.5 (`/api/projects/{id}/generate`)
-- 4 pre-made templates (Marketing Dashboard, Smart Contract Generator, Data Viz, SaaS Landing)
-- Live preview & editable code panel via react-live (`noInline` mode)
-- Tab switching preview/code, copy-to-clipboard, debounced code persistence
-- Workspace: split-pane layout with chat (left) + preview (right)
-- 100% backend test coverage (16/16 pytest)
+- Project CRUD
+- Single-prompt AI generation via Claude Sonnet 4.5
+- 4 templates (Marketing Dashboard, Smart Contract Generator, Data Viz, SaaS Landing)
+- react-live preview + editable code panel
+- Tab switching, copy-to-clipboard, debounced code persistence
+
+### v1.1 (this iteration)
+- **Auth**: Emergent Google Login, /login + /auth/callback, ProtectedRoute, user menu with logout
+- **Streaming**: Real-time SSE generation via `/api/projects/{id}/generate-stream`. Progressive chunks rendered in chat with blinking cursor
+- **Multi-file generation**: Claude outputs `===FILE: path===...===END===` format. Files stored as list, file tabs in code panel. App.jsx is preview entry (must be self-contained)
+- **Version history**: Snapshot per generation, last-20 retained per project. Modal UI with rollback button
+- **Export `.zip`**: Vite-ready scaffold (package.json, index.html, vite.config.js, src/main.jsx, README.md, src/App.jsx adapted for standalone use)
+- **Migration**: localStorage `user_id` projects auto-migrate to authenticated user on first login
+- 24/24 backend pytest pass, all frontend flows verified
 
 ## Backlog
-### P0
-- Add user auth (Emergent Google login or JWT) for true multi-user SaaS
-- Streaming responses from Claude (currently one-shot)
-
 ### P1
-- Multi-file/multi-component generation (currently single component due to react-live constraints)
+- Toast position fix (moved to bottom-right ✓)
+- Robust clipboard fallback (already implemented in v1.0 fix)
+- True multi-component preview via iframe-based bundler (currently single self-contained App.jsx)
 - Project sharing via public URL
-- Export project as `.zip` with full Vite/CRA scaffold
-- Version history per project (rollback to previous generation)
 
 ### P2
-- Custom template creation by users
-- Team workspaces & roles
-- Stripe billing for credit-based generation
+- Custom user templates
+- Team workspaces
+- Stripe credit-based billing
 - Real-time collaborative editing
+- GitHub direct push integration
 
 ## Test Credentials
-N/A — single-user via localStorage. Auto-generated user_id per browser.
+Production uses real Google OAuth (no static credentials). For testing: seed users + user_sessions in MongoDB per `/app/auth_testing.md`.
 
 ## Key Files
-- `/app/backend/server.py` — All API endpoints + LLM integration
-- `/app/frontend/src/lib/api.js` — Axios client with X-User-Id header
-- `/app/frontend/src/pages/LandingPage.jsx` — Templates + projects gallery
-- `/app/frontend/src/pages/Workspace.jsx` — IDE with chat + preview
-- `/app/frontend/src/components/ChatPanel.jsx` — Chat UI
-- `/app/frontend/src/components/PreviewPanel.jsx` — react-live preview/code
-- `/app/backend/tests/test_api.py` — Backend pytest suite
+- `/app/backend/server.py` — All endpoints, auth, streaming, multi-file, versioning, export
+- `/app/backend/.env` — `EMERGENT_LLM_KEY`
+- `/app/frontend/src/App.js` — Router with `ProtectedRoute` + `AppRouter` (synchronous OAuth hash check)
+- `/app/frontend/src/lib/auth.jsx` — `AuthProvider`, `useAuth`
+- `/app/frontend/src/pages/LoginPage.jsx`
+- `/app/frontend/src/pages/AuthCallback.jsx`
+- `/app/frontend/src/pages/Workspace.jsx` — SSE streaming, file tabs, history, export
+- `/app/frontend/src/components/VersionHistory.jsx`
+- `/app/auth_testing.md` — Auth testing playbook
