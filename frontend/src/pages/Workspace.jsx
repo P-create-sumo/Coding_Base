@@ -99,14 +99,17 @@ export default function Workspace() {
     }
   };
 
-  const updateCode = async (newCode) => {
+  const updateCodeTimer = useRef(null);
+  const updateCode = (newCode) => {
     setCode(newCode);
-    try {
-      await apiClient.put(`/projects/${id}/code`, { code: newCode });
-    } catch (e) {
-      // silently log; toast can be noisy on every keystroke
-      console.error(e);
-    }
+    if (updateCodeTimer.current) clearTimeout(updateCodeTimer.current);
+    updateCodeTimer.current = setTimeout(async () => {
+      try {
+        await apiClient.put(`/projects/${id}/code`, { code: newCode });
+      } catch (e) {
+        console.error(e);
+      }
+    }, 600);
   };
 
   if (loading) {

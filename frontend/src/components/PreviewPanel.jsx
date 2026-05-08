@@ -22,11 +22,27 @@ export default function PreviewPanel({ code, onCodeChange }) {
 
   const displayedCode = code && code.trim() ? code : EMPTY_CODE;
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(displayedCode);
-    setCopied(true);
-    toast.success("Code copied");
-    setTimeout(() => setCopied(false), 1500);
+  const copyCode = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(displayedCode);
+      } else {
+        // Fallback for non-secure contexts
+        const ta = document.createElement("textarea");
+        ta.value = displayedCode;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      toast.success("Code copied");
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      toast.error("Copy not allowed in this context");
+    }
   };
 
   return (
