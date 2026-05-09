@@ -9,7 +9,7 @@ export default function VersionHistory({ projectId, onClose, onRollback }) {
 
   useEffect(() => {
     apiClient
-      .get(`/projects/${projectId}/versions`)
+      .get(`/apps/projects/${projectId}/versions`)
       .then(({ data }) => setVersions(data))
       .catch(() => toast.error("Failed to load versions"))
       .finally(() => setLoading(false));

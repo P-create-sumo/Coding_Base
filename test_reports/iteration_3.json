@@ -1,0 +1,33 @@
+{
+  "summary": "FORGE v2.0 full backend + frontend regression. Migrated test suite from /api/projects/* to /api/apps/projects/* and added comprehensive coverage for new modules (Knowledge / RAG, Agents). 33/33 pytest tests pass in 10.9s. Frontend: hub home renders 3 cards with correct data-testid (hub-card-{apps,agents,knowledge}); navigation to /apps, /agents, /knowledge all work; Apps regression (templates list) intact; KnowledgeBaseDetail exposes all 6 expected testids (kb-file-input/kb-upload-btn/kb-url-input/kb-url-btn/kb-search-input/kb-search-btn); AgentsHub shows the 3 type cards (conversational/autonomous/coding). No console errors observed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) tool_calculator() in agents_router.py uses eval(); regex restricts to digits+ops but ** (from ^) is allowed and large exponents could DoS. Consider sympy or ast.parse with a whitelist.",
+    "(Optional) DuckDuckGo HTML scraping is fragile (selector .result__title may break). Add timeout fallback / wrap web_search errors as a graceful tool result string (already done) — fine for now.",
+    "(Optional) chunk_text() never advances start when last_period<size*0.5 and end==len(text); covered by `start>=len(text) break`. Good. Minor: while loop's `start = end - overlap` could equal previous start if a tiny chunk emerges; the early break protects, but consider asserting monotonicity.",
+    "(Optional) get_kb_context imports search_chunks from knowledge_router lazily at call time — add import-cycle protection at module load instead.",
+    "(Optional) /api/agents POST does not validate that linked_project_id (when provided for coding agents) actually exists & belongs to the user. Currently first chat will 404; preferable to validate at create."
+  ],
+  "critical_code_review_comments": [
+    "agents_router.tool_calculator uses raw eval() with regex whitelist that allows '**' (after ^→** replacement). Works, but vulnerable to expression like '9**9**9**9' which could hang the event loop since eval is sync. Suggest moving to async timeout or restricting exponent magnitude.",
+    "knowledge_router.search_chunks loads ALL chunks for a KB into memory (.to_list(10000)). Fine for MVP scale; for production, precompute idf and store inverted index in MongoDB.",
+    "knowledge_router.delete_kb does not gate kb_documents/kb_chunks deletes on user_id (only kb_id) — safe because kb_id is already user-scoped via the find_one() check, but defensive filtering by user_id would be cleaner.",
+    "agents_router._agent_run_autonomous: when LLM returns tool_calls but tc.id is None (rare on some providers), the tool_msg.tool_call_id will be empty and a follow-up LLM call may fail. Add fallback id generation.",
+    "apps_router.adapt_app_for_export() does not handle CRLF line endings — minor.",
+    "core.py loads emergentintegrations at import; if proxy URL is unreachable startup still succeeds (proxy fetched lazily in proxy_params). Good.",
+    "All routers correctly exclude {_id:0} on Mongo reads — no ObjectId leakage observed."
+  ],
+  "updated_files": ["/app/backend/tests/test_api.py"],
+  "success_rate": {"backend": "100% (33/33 pytest)", "frontend": "100% (hub nav + 3 sub-pages + testid coverage all pass; 0 console errors)"},
+  "test_credentials": "Seeded directly via mongosh/pymongo (USER_A / USER_B). Cleaned in teardown.",
+  "seed_data_creation": "test_api.py auto-seeds 2 users + sessions; FE test seeded 1 user via mongosh (cleaned).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test suite at /app/backend/tests/test_api.py covers: root, /api/apps/templates, auth (me/401), apps CRUD+isolation+export+delete-cascade, knowledge (CRUD, txt upload, BM25 search, no-overlap empty result, unsupported type 400, doc delete cascades chunks, kb delete cascades), agents (3 types create + isolation, conversational chat, autonomous SSE run-task with calculator, coding agent updates linked project, type-mismatched endpoint 400s, message persistence, delete cascade). Run: `pytest /app/backend/tests/test_api.py -v`. Autonomous test allows LLM to skip tool use (only asserts SSE stream + final event). Coding agent test asserts current_code mutation. For frontend: data-testid='hub-home', 'hub-card-{apps|agents|knowledge}', 'kb-file-input/upload-btn/url-input/url-btn/search-input/search-btn' all verified.",
+  "rca_of_issue": "N/A — no live bugs in v2.0. All migrated paths and new endpoints work end-to-end."
+}

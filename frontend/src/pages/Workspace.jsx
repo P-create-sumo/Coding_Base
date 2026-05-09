@@ -27,9 +27,9 @@ export default function Workspace() {
   const fetchData = useCallback(async () => {
     try {
       const [pRes, mRes, tRes] = await Promise.all([
-        apiClient.get(`/projects/${id}`),
-        apiClient.get(`/projects/${id}/messages`),
-        apiClient.get("/templates"),
+        apiClient.get(`/apps/projects/${id}`),
+        apiClient.get(`/apps/projects/${id}/messages`),
+        apiClient.get("/apps/templates"),
       ]);
       setProject(pRes.data);
       setMessages(mRes.data);
@@ -83,7 +83,7 @@ export default function Workspace() {
     setMessages((prev) => [...prev, tempUserMsg]);
 
     try {
-      const response = await fetch(`${API}/projects/${id}/generate-stream`, {
+      const response = await fetch(`${API}/apps/projects/${id}/generate-stream`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -170,7 +170,7 @@ export default function Workspace() {
     if (updateCodeTimer.current) clearTimeout(updateCodeTimer.current);
     updateCodeTimer.current = setTimeout(async () => {
       try {
-        await apiClient.put(`/projects/${id}/code`, { code: newContent, path });
+        await apiClient.put(`/apps/projects/${id}/code`, { code: newContent, path });
       } catch (e) {
         console.error(e);
       }
@@ -179,7 +179,7 @@ export default function Workspace() {
 
   const handleRollback = async (versionId) => {
     try {
-      const { data } = await apiClient.post(`/projects/${id}/rollback/${versionId}`);
+      const { data } = await apiClient.post(`/apps/projects/${id}/rollback/${versionId}`);
       setFiles(data.files || []);
       if (data.files?.length && !data.files.find((f) => f.path === activeFile)) {
         setActiveFile(data.files[0].path);
@@ -193,7 +193,7 @@ export default function Workspace() {
 
   const handleExport = async () => {
     try {
-      const response = await fetch(`${API}/projects/${id}/export`, {
+      const response = await fetch(`${API}/apps/projects/${id}/export`, {
         credentials: "include",
       });
       if (!response.ok) throw new Error("Export failed");
@@ -229,7 +229,7 @@ export default function Workspace() {
         <div className="flex items-center gap-3 min-w-0 flex-1">
           <button
             data-testid="back-btn"
-            onClick={() => navigate("/")}
+            onClick={() => navigate("/apps")}
             className="border border-[#2A2A2A] hover:border-[#F5F5F5] p-2 flex-shrink-0"
             title="Back"
           >

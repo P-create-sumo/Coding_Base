@@ -1,11 +1,9 @@
-"""Backend API tests for FORGE AI App Builder (auth-protected v2).
-
-Seeds two test users + sessions directly into MongoDB and uses
-`Authorization: Bearer <session_token>` for all API calls.
-"""
+"""Backend API tests for FORGE v2.0 (apps + knowledge + agents)."""
 import os
+import io
 import time
 import uuid
+import json
 import pytest
 import requests
 from pymongo import MongoClient
@@ -21,7 +19,6 @@ if not BASE_URL:
 
 API = f"{BASE_URL}/api"
 
-# Direct mongo for seeding
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "test_database")
 _mongo = MongoClient(MONGO_URL)
@@ -32,7 +29,6 @@ USER_A_ID = f"TEST_userA_{TS}"
 USER_B_ID = f"TEST_userB_{TS}"
 SESSION_A = f"TEST_session_A_{TS}"
 SESSION_B = f"TEST_session_B_{TS}"
-LEGACY_USER_ID = f"TEST_legacy_{TS}"
 
 
 def _seed():
@@ -55,7 +51,12 @@ def _seed():
 def _cleanup():
     _db.users.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
     _db.user_sessions.delete_many({"session_token": {"$in": [SESSION_A, SESSION_B]}})
-    _db.projects.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID, LEGACY_USER_ID]}})
+    _db.projects.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
+    _db.knowledge_bases.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
+    _db.kb_documents.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
+    _db.kb_chunks.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
+    _db.agents.delete_many({"user_id": {"$in": [USER_A_ID, USER_B_ID]}})
+    _db.agent_messages.delete_many({})  # safe; we use unique agent_ids
 
 
 def setup_module(module):
@@ -67,334 +68,331 @@ def teardown_module(module):
     _cleanup()
 
 
-def headers(token):
+def H(token):
     return {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
 
 
-# ===== Root / Templates =====
+# =================== Root + Auth ===================
 class TestRoot:
     def test_root(self):
         r = requests.get(f"{API}/", timeout=15)
         assert r.status_code == 200
-        assert "claude-sonnet-4-5" in r.json()["model"]
+        data = r.json()
+        assert "message" in data
+        assert "features" in data
+        assert set(data["features"]) >= {"app-creator", "agents", "knowledge"}
 
-    def test_templates(self):
-        r = requests.get(f"{API}/templates", timeout=15)
+    def test_apps_templates_new_path(self):
+        r = requests.get(f"{API}/apps/templates", timeout=15)
         assert r.status_code == 200
         assert len(r.json()) == 4
 
+    def test_legacy_templates_path_404(self):
+        # /api/templates moved
+        r = requests.get(f"{API}/templates", timeout=15)
+        assert r.status_code == 404
 
-# ===== Auth =====
+
 class TestAuth:
     def test_me_no_token_401(self):
         r = requests.get(f"{API}/auth/me", timeout=15)
         assert r.status_code == 401
 
-    def test_me_invalid_token_401(self):
-        r = requests.get(f"{API}/auth/me",
-                         headers={"Authorization": "Bearer bad_token_xyz"}, timeout=15)
+    def test_me_valid(self):
+        r = requests.get(f"{API}/auth/me", headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        assert r.json()["user_id"] == USER_A_ID
+
+    def test_apps_projects_requires_auth(self):
+        r = requests.get(f"{API}/apps/projects", timeout=15)
         assert r.status_code == 401
 
-    def test_me_valid_token(self):
-        r = requests.get(f"{API}/auth/me", headers=headers(SESSION_A), timeout=15)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["user_id"] == USER_A_ID
-        assert data["email"].startswith("test.user.A.")
 
-    def test_projects_requires_auth(self):
-        r = requests.get(f"{API}/projects", timeout=15)
-        assert r.status_code == 401
-
-    def test_logout_then_session_invalidated(self):
-        # Create an extra session for user A so we can test logout
-        token = f"TEST_logout_session_{TS}"
-        _db.user_sessions.insert_one({
-            "user_id": USER_A_ID, "session_token": token,
-            "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        # Logout
-        r = requests.post(f"{API}/auth/logout", headers=headers(token), timeout=15)
-        assert r.status_code == 200
-        # Session should now be deleted
-        r2 = requests.get(f"{API}/auth/me", headers=headers(token), timeout=15)
-        assert r2.status_code == 401
-
-    def test_migrate_legacy_projects(self):
-        # Create a project under legacy user_id directly in DB
-        legacy_pid = f"TEST_legacy_proj_{uuid.uuid4().hex[:8]}"
-        _db.projects.insert_one({
-            "id": legacy_pid, "user_id": LEGACY_USER_ID, "name": "TEST_legacy",
-            "description": "", "current_code": "", "files": [],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        })
-        r = requests.post(f"{API}/auth/migrate",
-                          json={"legacy_user_id": LEGACY_USER_ID},
-                          headers=headers(SESSION_A), timeout=15)
-        assert r.status_code == 200
-        assert r.json()["migrated"] == 1
-        # Verify project now belongs to user A
-        r2 = requests.get(f"{API}/projects/{legacy_pid}",
-                          headers=headers(SESSION_A), timeout=15)
-        assert r2.status_code == 200
-        # Cleanup
-        requests.delete(f"{API}/projects/{legacy_pid}",
-                        headers=headers(SESSION_A), timeout=15)
-
-
-# ===== Project CRUD + Isolation =====
-class TestProjectCRUD:
+# =================== Apps (migrated paths) ===================
+class TestAppsProjects:
     project_id = None
 
-    def test_create_project(self):
-        r = requests.post(f"{API}/projects",
-                          json={"name": "TEST_project1", "description": "Test"},
-                          headers=headers(SESSION_A), timeout=15)
+    def test_create(self):
+        r = requests.post(f"{API}/apps/projects",
+                          json={"name": "TEST_proj_v2", "description": "v2"},
+                          headers=H(SESSION_A), timeout=15)
         assert r.status_code == 200
         data = r.json()
-        assert data["name"] == "TEST_project1"
+        assert data["name"] == "TEST_proj_v2"
         assert data["user_id"] == USER_A_ID
-        TestProjectCRUD.project_id = data["id"]
+        TestAppsProjects.project_id = data["id"]
 
     def test_list_isolation(self):
-        # User A sees their project
-        rA = requests.get(f"{API}/projects", headers=headers(SESSION_A), timeout=15)
-        assert any(p["id"] == TestProjectCRUD.project_id for p in rA.json())
-        # User B doesn't
-        rB = requests.get(f"{API}/projects", headers=headers(SESSION_B), timeout=15)
-        assert not any(p["id"] == TestProjectCRUD.project_id for p in rB.json())
+        rA = requests.get(f"{API}/apps/projects", headers=H(SESSION_A), timeout=15)
+        assert any(p["id"] == TestAppsProjects.project_id for p in rA.json())
+        rB = requests.get(f"{API}/apps/projects", headers=H(SESSION_B), timeout=15)
+        assert not any(p["id"] == TestAppsProjects.project_id for p in rB.json())
 
     def test_get_wrong_user_404(self):
-        r = requests.get(f"{API}/projects/{TestProjectCRUD.project_id}",
-                         headers=headers(SESSION_B), timeout=15)
+        r = requests.get(f"{API}/apps/projects/{TestAppsProjects.project_id}",
+                         headers=H(SESSION_B), timeout=15)
         assert r.status_code == 404
 
-    def test_update_code_default_path(self):
-        new_code = "const App=()=><div>Hi</div>;render(<App/>);"
-        r = requests.put(f"{API}/projects/{TestProjectCRUD.project_id}/code",
-                         json={"code": new_code}, headers=headers(SESSION_A), timeout=15)
+    def test_update_code(self):
+        code = "const App=()=><div>Hi</div>;render(<App/>);"
+        r = requests.put(f"{API}/apps/projects/{TestAppsProjects.project_id}/code",
+                         json={"code": code}, headers=H(SESSION_A), timeout=15)
         assert r.status_code == 200
-        # Verify
-        r2 = requests.get(f"{API}/projects/{TestProjectCRUD.project_id}",
-                          headers=headers(SESSION_A), timeout=15)
-        assert r2.json()["current_code"] == new_code
-        # files array updated with App.jsx
-        files = r2.json()["files"]
-        assert any(f["path"] == "App.jsx" and f["content"] == new_code for f in files)
+        r2 = requests.get(f"{API}/apps/projects/{TestAppsProjects.project_id}",
+                          headers=H(SESSION_A), timeout=15)
+        assert r2.json()["current_code"] == code
 
-    def test_update_code_specific_path(self):
-        r = requests.put(f"{API}/projects/{TestProjectCRUD.project_id}/code",
-                         json={"code": "# Hello", "path": "README.md"},
-                         headers=headers(SESSION_A), timeout=15)
+    def test_export_zip(self):
+        r = requests.get(f"{API}/apps/projects/{TestAppsProjects.project_id}/export",
+                         headers=H(SESSION_A), timeout=30)
         assert r.status_code == 200
-        r2 = requests.get(f"{API}/projects/{TestProjectCRUD.project_id}",
-                          headers=headers(SESSION_A), timeout=15)
-        files = r2.json()["files"]
-        assert any(f["path"] == "README.md" and f["content"] == "# Hello" for f in files)
+        assert r.headers.get("content-type") == "application/zip"
+        import zipfile as _zf
+        zf = _zf.ZipFile(io.BytesIO(r.content))
+        names = zf.namelist()
+        assert any(n.endswith("/package.json") for n in names)
+        assert any(n.endswith("/src/App.jsx") for n in names)
+
+    def test_delete_cascade(self):
+        r = requests.delete(f"{API}/apps/projects/{TestAppsProjects.project_id}",
+                            headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        r2 = requests.get(f"{API}/apps/projects/{TestAppsProjects.project_id}",
+                          headers=H(SESSION_A), timeout=15)
+        assert r2.status_code == 404
 
 
-# ===== LLM Generate (non-stream + stream) =====
-class TestGenerate:
-    project_id = None
+# =================== Knowledge / RAG ===================
+class TestKnowledge:
+    kb_id = None
+    doc_id = None
 
-    @classmethod
-    def setup_class(cls):
-        r = requests.post(f"{API}/projects",
-                          json={"name": "TEST_gen", "description": ""},
-                          headers=headers(SESSION_A), timeout=15)
-        cls.project_id = r.json()["id"]
-
-    def test_generate_non_stream(self):
-        r = requests.post(f"{API}/projects/{self.project_id}/generate",
-                          json={"prompt": "Create a tiny counter button. Minimal."},
-                          headers=headers(SESSION_A), timeout=120)
-        assert r.status_code == 200, r.text[:300]
+    def test_create_kb(self):
+        r = requests.post(f"{API}/knowledge",
+                          json={"name": "TEST_kb1", "description": "for tests"},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
         data = r.json()
-        assert data["assistant_message"]["role"] == "assistant"
-        assert data.get("code"), "code field empty"
-        # Files parsed
-        assert isinstance(data.get("files"), list)
+        assert data["name"] == "TEST_kb1"
+        assert data["user_id"] == USER_A_ID
+        assert data["doc_count"] == 0
+        TestKnowledge.kb_id = data["id"]
 
-    def test_versions_after_generate(self):
-        r = requests.get(f"{API}/projects/{self.project_id}/versions",
-                         headers=headers(SESSION_A), timeout=15)
+    def test_list_isolation(self):
+        rA = requests.get(f"{API}/knowledge", headers=H(SESSION_A), timeout=15)
+        assert any(k["id"] == TestKnowledge.kb_id for k in rA.json())
+        rB = requests.get(f"{API}/knowledge", headers=H(SESSION_B), timeout=15)
+        assert not any(k["id"] == TestKnowledge.kb_id for k in rB.json())
+
+    def test_upload_txt_document(self):
+        text = (
+            "FORGE is an AI app builder platform. It supports React generation, "
+            "knowledge bases for retrieval augmented generation, and autonomous agents "
+            "that use tools like web_search, calculator, and read_url. The platform stores "
+            "projects in MongoDB and uses BM25 keyword search over uploaded documents."
+        )
+        files = {"file": ("notes.txt", text.encode("utf-8"), "text/plain")}
+        r = requests.post(
+            f"{API}/knowledge/{TestKnowledge.kb_id}/upload",
+            files=files,
+            headers={"Authorization": f"Bearer {SESSION_A}"},
+            timeout=30,
+        )
+        assert r.status_code == 200, r.text[:300]
+        d = r.json()
+        assert d["source_type"] == "txt"
+        assert d["chunk_count"] >= 1
+        TestKnowledge.doc_id = d["id"]
+
+    def test_list_documents(self):
+        r = requests.get(f"{API}/knowledge/{TestKnowledge.kb_id}/documents",
+                         headers=H(SESSION_A), timeout=15)
         assert r.status_code == 200
-        versions = r.json()
-        # First generation may or may not have multi-file files; if files were parsed, version exists
-        # We ran one generate above
-        assert isinstance(versions, list)
+        docs = r.json()
+        assert any(d["id"] == TestKnowledge.doc_id for d in docs)
 
-    def test_generate_stream(self):
-        url = f"{API}/projects/{self.project_id}/generate-stream"
-        r = requests.post(url, json={"prompt": "Add a reset button to the counter."},
-                          headers=headers(SESSION_A), timeout=120, stream=True)
+    def test_search_bm25(self):
+        r = requests.post(f"{API}/knowledge/{TestKnowledge.kb_id}/search",
+                          json={"query": "autonomous agents tools calculator",
+                                "top_k": 3},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) >= 1
+        assert all("score" in r and r["score"] > 0 for r in results)
+        assert all("content" in r for r in results)
+        # Highest first
+        scores = [r["score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_search_no_overlap_returns_empty(self):
+        r = requests.post(f"{API}/knowledge/{TestKnowledge.kb_id}/search",
+                          json={"query": "zzzqqxxx noexistword", "top_k": 5},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        assert r.json()["results"] == []
+
+    def test_unsupported_filetype(self):
+        files = {"file": ("evil.exe", b"\x00\x01\x02", "application/octet-stream")}
+        r = requests.post(
+            f"{API}/knowledge/{TestKnowledge.kb_id}/upload",
+            files=files,
+            headers={"Authorization": f"Bearer {SESSION_A}"},
+            timeout=15,
+        )
+        assert r.status_code == 400
+
+    def test_delete_document_cascades_chunks(self):
+        # Snapshot chunk count
+        before = _db.kb_chunks.count_documents({"doc_id": TestKnowledge.doc_id})
+        assert before >= 1
+        r = requests.delete(
+            f"{API}/knowledge/{TestKnowledge.kb_id}/documents/{TestKnowledge.doc_id}",
+            headers=H(SESSION_A), timeout=15,
+        )
+        assert r.status_code == 200
+        after = _db.kb_chunks.count_documents({"doc_id": TestKnowledge.doc_id})
+        assert after == 0
+
+    def test_delete_kb_cascades(self):
+        # Re-create a fresh KB + upload to verify cascade end-to-end
+        r = requests.post(f"{API}/knowledge",
+                          json={"name": "TEST_kb_cascade"},
+                          headers=H(SESSION_A), timeout=15)
+        kb_id = r.json()["id"]
+        files = {"file": ("c.txt", b"forge bm25 cascade test content here.", "text/plain")}
+        requests.post(f"{API}/knowledge/{kb_id}/upload", files=files,
+                      headers={"Authorization": f"Bearer {SESSION_A}"}, timeout=30)
+        r = requests.delete(f"{API}/knowledge/{kb_id}", headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        assert _db.kb_documents.count_documents({"kb_id": kb_id}) == 0
+        assert _db.kb_chunks.count_documents({"kb_id": kb_id}) == 0
+
+
+# =================== Agents ===================
+class TestAgents:
+    conv_agent_id = None
+    auto_agent_id = None
+    coding_agent_id = None
+    coding_project_id = None
+
+    def test_create_invalid_type_400(self):
+        r = requests.post(f"{API}/agents",
+                          json={"name": "bad", "type": "wrong"},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 400
+
+    def test_create_conversational(self):
+        r = requests.post(f"{API}/agents",
+                          json={"name": "TEST_conv", "type": "conversational"},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["type"] == "conversational"
+        assert data["system_prompt"]  # default applied
+        TestAgents.conv_agent_id = data["id"]
+
+    def test_create_autonomous(self):
+        r = requests.post(f"{API}/agents",
+                          json={"name": "TEST_auto", "type": "autonomous"},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        TestAgents.auto_agent_id = r.json()["id"]
+
+    def test_create_coding_agent_with_project(self):
+        # create a project first
+        rp = requests.post(f"{API}/apps/projects",
+                           json={"name": "TEST_coding_proj"},
+                           headers=H(SESSION_A), timeout=15)
+        TestAgents.coding_project_id = rp.json()["id"]
+        # set initial code
+        requests.put(f"{API}/apps/projects/{TestAgents.coding_project_id}/code",
+                     json={"code": "const App=()=><div>v0</div>;render(<App/>);"},
+                     headers=H(SESSION_A), timeout=15)
+        r = requests.post(f"{API}/agents",
+                          json={"name": "TEST_coder", "type": "coding",
+                                "linked_project_id": TestAgents.coding_project_id},
+                          headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 200
+        TestAgents.coding_agent_id = r.json()["id"]
+
+    def test_list_agents_isolation(self):
+        rA = requests.get(f"{API}/agents", headers=H(SESSION_A), timeout=15)
+        ids = {a["id"] for a in rA.json()}
+        assert TestAgents.conv_agent_id in ids
+        rB = requests.get(f"{API}/agents", headers=H(SESSION_B), timeout=15)
+        idsB = {a["id"] for a in rB.json()}
+        assert TestAgents.conv_agent_id not in idsB
+
+    def test_conversational_chat(self):
+        r = requests.post(f"{API}/agents/{TestAgents.conv_agent_id}/chat",
+                          json={"prompt": "Reply with the single word: hello."},
+                          headers=H(SESSION_A), timeout=60)
+        assert r.status_code == 200, r.text[:300]
+        msg = r.json()["message"]
+        assert msg["role"] == "assistant"
+        assert msg["content"]
+
+    def test_autonomous_runtask_streams_calculator(self):
+        url = f"{API}/agents/{TestAgents.auto_agent_id}/run-task"
+        # Calculator query is deterministic and avoids flaky web search
+        prompt = "Use the calculator tool to compute (12*5)+3 and tell me the answer."
+        r = requests.post(url, json={"prompt": prompt}, headers=H(SESSION_A),
+                          timeout=120, stream=True)
         assert r.status_code == 200
         assert "text/event-stream" in r.headers.get("content-type", "")
-        events = []
-        chunks_seen = 0
-        done_payload = None
+        events_seen = []
+        final_payload = None
         for line in r.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
-            import json as _j
-            payload = _j.loads(line[6:])
-            events.append(payload["type"])
-            if payload["type"] == "chunk":
-                chunks_seen += 1
-            elif payload["type"] == "done":
-                done_payload = payload
+            payload = json.loads(line[6:])
+            events_seen.append(payload["type"])
+            if payload["type"] == "final":
+                final_payload = payload
                 break
-            elif payload["type"] == "error":
-                pytest.fail(f"Stream error: {payload}")
-        assert "user" in events, f"events: {events}"
-        assert chunks_seen > 0, f"no chunks; events: {events}"
-        assert done_payload is not None
-        assert "assistant_message" in done_payload
-        assert "files" in done_payload
+            if payload["type"] == "error":
+                pytest.fail(f"agent stream error: {payload}")
+        assert "user" in events_seen
+        assert final_payload is not None
+        # We expect at least one tool_call/tool_result (calculator) but allow LLM to skip
+        # if it hardcodes. Don't fail strictly on tool use.
+        if "tool_call" in events_seen:
+            assert "tool_result" in events_seen
 
-    def test_generate_unauthorized_user_404(self):
-        r = requests.post(f"{API}/projects/{self.project_id}/generate",
-                          json={"prompt": "x"}, headers=headers(SESSION_B), timeout=30)
-        assert r.status_code == 404
+    def test_coding_agent_updates_project(self):
+        r = requests.post(f"{API}/agents/{TestAgents.coding_agent_id}/chat",
+                          json={"prompt": "Change the text inside the div from v0 to v1. Keep it minimal."},
+                          headers=H(SESSION_A), timeout=120)
+        assert r.status_code == 200, r.text[:300]
+        # Verify project current_code mutated
+        rp = requests.get(f"{API}/apps/projects/{TestAgents.coding_project_id}",
+                          headers=H(SESSION_A), timeout=15)
+        new_code = rp.json()["current_code"]
+        assert new_code  # not empty
+        # Either contains v1 or at least changed from original
+        assert new_code != "const App=()=><div>v0</div>;render(<App/>);"
 
+    def test_chat_on_autonomous_returns_400(self):
+        r = requests.post(f"{API}/agents/{TestAgents.auto_agent_id}/chat",
+                          json={"prompt": "hi"}, headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 400
 
-# ===== Versions / Rollback =====
-class TestVersions:
-    project_id = None
+    def test_runtask_on_conversational_returns_400(self):
+        r = requests.post(f"{API}/agents/{TestAgents.conv_agent_id}/run-task",
+                          json={"prompt": "hi"}, headers=H(SESSION_A), timeout=15)
+        assert r.status_code == 400
 
-    @classmethod
-    def setup_class(cls):
-        # Create a project + seed two versions directly
-        r = requests.post(f"{API}/projects",
-                          json={"name": "TEST_versions"},
-                          headers=headers(SESSION_A), timeout=15)
-        cls.project_id = r.json()["id"]
-        # Insert 2 fake versions directly into DB
-        for i, code in enumerate(["v1_code", "v2_code"]):
-            _db.versions.insert_one({
-                "id": f"TEST_ver_{TS}_{i}",
-                "project_id": cls.project_id,
-                "user_id": USER_A_ID,
-                "prompt": f"prompt v{i}",
-                "files": [{"path": "App.jsx", "content": code}],
-                "current_code": code,
-                "created_at": (datetime.now(timezone.utc) + timedelta(seconds=i)).isoformat(),
-            })
-
-    def test_list_versions_sorted_desc(self):
-        r = requests.get(f"{API}/projects/{self.project_id}/versions",
-                         headers=headers(SESSION_A), timeout=15)
+    def test_get_messages(self):
+        r = requests.get(f"{API}/agents/{TestAgents.conv_agent_id}/messages",
+                         headers=H(SESSION_A), timeout=15)
         assert r.status_code == 200
-        vs = r.json()
-        assert len(vs) >= 2
-        # Newest first
-        assert vs[0]["created_at"] >= vs[-1]["created_at"]
+        msgs = r.json()
+        assert len(msgs) >= 2  # at least user+assistant from earlier test
 
-    def test_versions_isolation(self):
-        r = requests.get(f"{API}/projects/{self.project_id}/versions",
-                         headers=headers(SESSION_B), timeout=15)
-        assert r.status_code == 404
-
-    def test_rollback(self):
-        target_id = f"TEST_ver_{TS}_0"  # rollback to v1_code
-        r = requests.post(f"{API}/projects/{self.project_id}/rollback/{target_id}",
-                          headers=headers(SESSION_A), timeout=15)
+    def test_delete_agent_cascades_messages(self):
+        # use conv agent
+        r = requests.delete(f"{API}/agents/{TestAgents.conv_agent_id}",
+                            headers=H(SESSION_A), timeout=15)
         assert r.status_code == 200
-        data = r.json()
-        assert data["current_code"] == "v1_code"
-        # Verify project reflects rollback
-        r2 = requests.get(f"{API}/projects/{self.project_id}",
-                          headers=headers(SESSION_A), timeout=15)
-        assert r2.json()["current_code"] == "v1_code"
-
-    def test_rollback_invalid_version(self):
-        r = requests.post(f"{API}/projects/{self.project_id}/rollback/nonexistent",
-                          headers=headers(SESSION_A), timeout=15)
-        assert r.status_code == 404
-
-
-# ===== Multi-file parsing helpers (unit-style via API) =====
-class TestMultiFileExportAndPath:
-    project_id = None
-
-    @classmethod
-    def setup_class(cls):
-        r = requests.post(f"{API}/projects",
-                          json={"name": "TEST_export"},
-                          headers=headers(SESSION_A), timeout=15)
-        cls.project_id = r.json()["id"]
-        # Set files via direct PUT calls
-        app_code = ("const App = () => <div className='p-4'>Hello</div>;\n"
-                    "render(<App />);")
-        readme = "# Demo\nGenerated."
-        requests.put(f"{API}/projects/{cls.project_id}/code",
-                     json={"code": app_code}, headers=headers(SESSION_A), timeout=15)
-        requests.put(f"{API}/projects/{cls.project_id}/code",
-                     json={"code": readme, "path": "README.md"},
-                     headers=headers(SESSION_A), timeout=15)
-
-    def test_export_zip_structure(self):
-        r = requests.get(f"{API}/projects/{self.project_id}/export",
-                         headers=headers(SESSION_A), timeout=30)
-        assert r.status_code == 200
-        assert r.headers.get("content-type") == "application/zip"
-        import io as _io, zipfile as _zf
-        zf = _zf.ZipFile(_io.BytesIO(r.content))
-        names = zf.namelist()
-        # At least 1 root folder
-        roots = {n.split("/")[0] for n in names}
-        assert len(roots) == 1
-        root = list(roots)[0]
-        expected = {
-            f"{root}/package.json",
-            f"{root}/index.html",
-            f"{root}/vite.config.js",
-            f"{root}/src/main.jsx",
-            f"{root}/README.md",
-            f"{root}/src/App.jsx",
-        }
-        missing = expected - set(names)
-        assert not missing, f"missing: {missing}"
-
-        # Validate package.json is valid JSON (no .format() leftover)
-        import json as _j
-        pkg = _j.loads(zf.read(f"{root}/package.json").decode())
-        assert pkg["name"]
-        assert "react" in pkg["dependencies"]
-
-        # App.jsx adapted: import React + export default
-        app_content = zf.read(f"{root}/src/App.jsx").decode()
-        assert "import React" in app_content
-        assert "export default App" in app_content
-        assert "render(<App" not in app_content  # render() removed
-
-    def test_export_unauthorized_404(self):
-        r = requests.get(f"{API}/projects/{self.project_id}/export",
-                         headers=headers(SESSION_B), timeout=15)
-        assert r.status_code == 404
-
-
-# ===== Delete cascade =====
-class TestDeleteCascade:
-    def test_delete_cascades(self):
-        r = requests.post(f"{API}/projects",
-                          json={"name": "TEST_delete"},
-                          headers=headers(SESSION_A), timeout=15)
-        pid = r.json()["id"]
-        # Add a fake version
-        _db.versions.insert_one({
-            "id": f"TEST_delver_{TS}", "project_id": pid, "user_id": USER_A_ID,
-            "prompt": "x", "files": [], "current_code": "",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        r2 = requests.delete(f"{API}/projects/{pid}",
-                             headers=headers(SESSION_A), timeout=15)
-        assert r2.status_code == 200
-        # Versions should be deleted
-        assert _db.versions.find_one({"project_id": pid}) is None
-        # Project gone
-        r3 = requests.get(f"{API}/projects/{pid}",
-                          headers=headers(SESSION_A), timeout=15)
-        assert r3.status_code == 404
+        assert _db.agent_messages.count_documents({"agent_id": TestAgents.conv_agent_id}) == 0

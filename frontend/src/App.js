@@ -1,7 +1,12 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
-import LandingPage from "@/pages/LandingPage";
+import HubHome from "@/pages/HubHome";
+import AppsHub from "@/pages/AppsHub";
 import Workspace from "@/pages/Workspace";
+import AgentsHub from "@/pages/AgentsHub";
+import AgentChat from "@/pages/AgentChat";
+import KnowledgeHub from "@/pages/KnowledgeHub";
+import KnowledgeBaseDetail from "@/pages/KnowledgeBaseDetail";
 import LoginPage from "@/pages/LoginPage";
 import AuthCallback from "@/pages/AuthCallback";
 import { AuthProvider, useAuth } from "@/lib/auth";
@@ -24,29 +29,19 @@ function ProtectedRoute({ children }) {
 
 function AppRouter() {
   const location = useLocation();
-  // Synchronous check for OAuth callback BEFORE other routes evaluate
   if (location.hash?.includes("session_id=")) {
     return <AuthCallback />;
   }
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <LandingPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/project/:id"
-        element={
-          <ProtectedRoute>
-            <Workspace />
-          </ProtectedRoute>
-        }
-      />
+      <Route path="/" element={<ProtectedRoute><HubHome /></ProtectedRoute>} />
+      <Route path="/apps" element={<ProtectedRoute><AppsHub /></ProtectedRoute>} />
+      <Route path="/apps/:id" element={<ProtectedRoute><Workspace /></ProtectedRoute>} />
+      <Route path="/agents" element={<ProtectedRoute><AgentsHub /></ProtectedRoute>} />
+      <Route path="/agents/:id" element={<ProtectedRoute><AgentChat /></ProtectedRoute>} />
+      <Route path="/knowledge" element={<ProtectedRoute><KnowledgeHub /></ProtectedRoute>} />
+      <Route path="/knowledge/:id" element={<ProtectedRoute><KnowledgeBaseDetail /></ProtectedRoute>} />
     </Routes>
   );
 }
