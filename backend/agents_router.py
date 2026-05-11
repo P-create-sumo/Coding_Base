@@ -10,7 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from core import db, get_current_user, User, chat_completion, now_iso, new_id, logger
-from knowledge_router import search_chunks
+from knowledge_router import search_chunks, rerank_chunks
 
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -131,19 +131,17 @@ TOOL_DEFS = [
 
 
 async def tool_web_search(query: str) -> str:
-    """DuckDuckGo HTML search (no API key)."""
+    """DuckDuckGo HTML search with lite fallback (no API key)."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    # Try main HTML interface first
     try:
         async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
-            r = await client.get(
-                "https://duckduckgo.com/html/",
-                params={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-            )
+            r = await client.get("https://html.duckduckgo.com/html/", params={"q": query}, headers=headers)
             r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         results = []
-        for el in soup.select(".result")[:6]:
-            title_el = el.select_one(".result__title")
+        for el in soup.select(".result, .web-result")[:6]:
+            title_el = el.select_one(".result__title, .result__a")
             url_el = el.select_one(".result__url")
             snippet_el = el.select_one(".result__snippet")
             if title_el:
@@ -152,11 +150,31 @@ async def tool_web_search(query: str) -> str:
                     "url": url_el.get_text(strip=True) if url_el else "",
                     "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
                 })
-        if not results:
-            return f"No results found for: {query}"
-        return "\n\n".join([f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results)])
+        if results:
+            return "\n\n".join([f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results)])
     except Exception as e:
-        return f"Search error: {e}"
+        logger.info(f"DDG main failed: {e}")
+
+    # Fallback: lite version
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            r = await client.get("https://lite.duckduckgo.com/lite/", params={"q": query}, headers=headers)
+            r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        results = []
+        for a in soup.select("a.result-link")[:6]:
+            results.append({"title": a.get_text(strip=True), "url": a.get("href", ""), "snippet": ""})
+        # snippets are in a sibling td
+        snippets = [td.get_text(strip=True) for td in soup.select("td.result-snippet")][:6]
+        for i, s in enumerate(snippets):
+            if i < len(results):
+                results[i]["snippet"] = s
+        if results:
+            return "\n\n".join([f"{i+1}. {r['title']}\n   {r['url']}\n   {r['snippet']}" for i, r in enumerate(results)])
+    except Exception as e:
+        logger.info(f"DDG lite failed: {e}")
+
+    return f"No results found for: {query} (web search unavailable)"
 
 
 async def tool_read_url(url: str) -> str:
@@ -175,14 +193,53 @@ async def tool_read_url(url: str) -> str:
 
 
 def tool_calculator(expression: str) -> str:
+    """Safe math evaluator using AST whitelist with bounds."""
+    import ast
+    import operator as op
+
+    OPS = {
+        ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul,
+        ast.Div: op.truediv, ast.FloorDiv: op.floordiv, ast.Mod: op.mod,
+        ast.USub: op.neg, ast.UAdd: op.pos,
+    }
+    # Power handled separately with bounds
+
+    expr = expression.replace("^", "**").strip()
+    if not expr or len(expr) > 200:
+        return "Error: empty or too long"
+
+    def _eval(node):
+        if isinstance(node, ast.Num):  # py<3.8
+            return node.n
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return node.value
+            raise ValueError("Only numeric constants allowed")
+        if isinstance(node, ast.BinOp):
+            left = _eval(node.left)
+            right = _eval(node.right)
+            if isinstance(node.op, ast.Pow):
+                # Limit exponent magnitude to prevent DoS
+                if abs(right) > 100 or abs(left) > 1e6:
+                    raise ValueError("Exponent too large")
+                return left ** right
+            if type(node.op) in OPS:
+                return OPS[type(node.op)](left, right)
+            raise ValueError(f"Operator not allowed: {type(node.op).__name__}")
+        if isinstance(node, ast.UnaryOp):
+            if type(node.op) in OPS:
+                return OPS[type(node.op)](_eval(node.operand))
+            raise ValueError(f"Unary op not allowed: {type(node.op).__name__}")
+        raise ValueError(f"Node not allowed: {type(node).__name__}")
+
     try:
-        # safe-ish eval: only math symbols + sqrt/abs
-        allowed = re.compile(r"^[\d\.\s\+\-\*\/\(\)\,\%]+$")
-        expr = expression.replace("^", "**")
-        if not allowed.match(expr):
-            return "Error: only basic math allowed."
-        result = eval(expr, {"__builtins__": {}}, {})
+        tree = ast.parse(expr, mode="eval")
+        result = _eval(tree.body)
+        if isinstance(result, float) and (abs(result) == float("inf") or result != result):
+            return "Error: result overflow / NaN"
         return str(result)
+    except ValueError as e:
+        return f"Calc error: {e}"
     except Exception as e:
         return f"Calc error: {e}"
 
@@ -220,6 +277,23 @@ async def list_agents(user: User = Depends(get_current_user)):
 async def create_agent(req: CreateAgentRequest, user: User = Depends(get_current_user)):
     if req.type not in AGENT_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid type. Must be one of {AGENT_TYPES}")
+
+    if req.type == "coding":
+        if not req.linked_project_id:
+            raise HTTPException(status_code=400, detail="Coding agents require a linked_project_id")
+        proj = await db.projects.find_one(
+            {"id": req.linked_project_id, "user_id": user.user_id}, {"_id": 0}
+        )
+        if not proj:
+            raise HTTPException(status_code=400, detail="linked_project_id does not exist or is not yours")
+
+    if req.knowledge_base_id:
+        kb = await db.knowledge_bases.find_one(
+            {"id": req.knowledge_base_id, "user_id": user.user_id}, {"_id": 0}
+        )
+        if not kb:
+            raise HTTPException(status_code=400, detail="knowledge_base_id does not exist or is not yours")
+
     sys_prompt = req.system_prompt or DEFAULT_SYSTEM_PROMPTS[req.type]
     agent = Agent(
         user_id=user.user_id, name=req.name, type=req.type, description=req.description,
@@ -285,10 +359,10 @@ async def _agent_chat_simple(agent: Agent, prompt: str) -> AgentMessage:
     history_docs = await db.agent_messages.find({"agent_id": agent.id}, {"_id": 0}).sort("created_at", 1).to_list(500)
     history = history_docs[:-1]
 
-    # Inject KB context
+    # Inject KB context (hybrid rerank)
     kb_ctx = ""
     if agent.knowledge_base_id:
-        chunks = await search_chunks(agent.knowledge_base_id, agent.user_id, prompt, top_k=4)
+        chunks = await rerank_chunks(agent.knowledge_base_id, agent.user_id, prompt, top_k=4)
         if chunks:
             kb_ctx = "\n\n== Relevant context from knowledge base ==\n" + "\n\n".join(
                 [f"[{c['doc_name']}] {c['content']}" for c in chunks]
@@ -448,6 +522,101 @@ async def agent_chat(agent_id: str, req: ChatRequest, user: User = Depends(get_c
         raise HTTPException(status_code=400, detail="Use /run-task for autonomous agents")
 
     return {"message": msg.model_dump()}
+
+
+@router.post("/{agent_id}/chat-stream")
+async def agent_chat_stream(agent_id: str, req: ChatRequest, user: User = Depends(get_current_user)):
+    """Streaming SSE chat for conversational + coding agents."""
+    agent_doc = await db.agents.find_one({"id": agent_id, "user_id": user.user_id}, {"_id": 0})
+    if not agent_doc:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = Agent(**agent_doc)
+    if agent.type not in ("conversational", "coding"):
+        raise HTTPException(status_code=400, detail="Streaming only for conversational/coding agents")
+
+    async def event_stream():
+        # Save user message + emit user event
+        user_msg = AgentMessage(agent_id=agent.id, role="user", content=req.prompt)
+        await db.agent_messages.insert_one(user_msg.model_dump())
+        yield f"data: {json.dumps({'type': 'user', 'message': user_msg.model_dump()})}\n\n"
+
+        # Build context
+        history_docs = await db.agent_messages.find({"agent_id": agent.id}, {"_id": 0}).sort("created_at", 1).to_list(500)
+        history = history_docs[:-1]
+
+        if agent.type == "coding":
+            if not agent.linked_project_id:
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'No linked project'})}\n\n"
+                return
+            proj = await db.projects.find_one(
+                {"id": agent.linked_project_id, "user_id": agent.user_id}, {"_id": 0}
+            )
+            if not proj:
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'Linked project missing'})}\n\n"
+                return
+            current_code = proj.get("current_code", "") or "// (empty)"
+            system = agent.system_prompt + f"\n\n== CURRENT App.jsx ==\n```jsx\n{current_code}\n```\n"
+            messages = [{"role": "system", "content": system}, {"role": "user", "content": req.prompt}]
+        else:
+            kb_ctx = ""
+            if agent.knowledge_base_id:
+                chunks = await rerank_chunks(agent.knowledge_base_id, agent.user_id, req.prompt, top_k=4)
+                if chunks:
+                    kb_ctx = "\n\n== Relevant context from knowledge base ==\n" + "\n\n".join(
+                        [f"[{c['doc_name']}] {c['content']}" for c in chunks]
+                    )
+            system = agent.system_prompt + kb_ctx
+            messages = [{"role": "system", "content": system}]
+            for m in history:
+                messages.append({"role": m["role"], "content": m["content"]})
+            messages.append({"role": "user", "content": req.prompt})
+
+        full_text = ""
+        try:
+            response = chat_completion(messages, stream=True)
+            for chunk in response:
+                try:
+                    delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
+                    if delta:
+                        full_text += delta
+                        yield f"data: {json.dumps({'type': 'chunk', 'text': delta})}\n\n"
+                        await asyncio.sleep(0)
+                except Exception:
+                    continue
+
+            # Persist + extras
+            asst_msg = AgentMessage(agent_id=agent.id, role="assistant", content=full_text)
+            await db.agent_messages.insert_one(asst_msg.model_dump())
+            await db.agents.update_one({"id": agent.id}, {"$set": {"updated_at": now_iso()}})
+
+            updated_code = None
+            if agent.type == "coding":
+                m = re.search(r"===FILE:\s*App\.jsx\s*===\s*\n(.*?)\n===END===", full_text, re.DOTALL)
+                if m:
+                    updated_code = m.group(1).strip()
+                else:
+                    cb = re.search(r"```(?:jsx|javascript|js|tsx)?\s*\n([\s\S]*?)\n```", full_text)
+                    if cb:
+                        updated_code = cb.group(1).strip()
+                if updated_code:
+                    await db.projects.update_one(
+                        {"id": agent.linked_project_id},
+                        {"$set": {
+                            "current_code": updated_code,
+                            "files": [{"path": "App.jsx", "content": updated_code}],
+                            "updated_at": now_iso(),
+                        }},
+                    )
+
+            yield f"data: {json.dumps({'type': 'done', 'message': asst_msg.model_dump(), 'updated_code': updated_code})}\n\n"
+        except Exception as e:
+            logger.exception("chat stream error")
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/{agent_id}/run-task")

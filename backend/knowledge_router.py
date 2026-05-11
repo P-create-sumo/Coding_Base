@@ -329,3 +329,50 @@ async def delete_document(kb_id: str, doc_id: str, user: User = Depends(get_curr
 async def search_kb(kb_id: str, req: SearchRequest, user: User = Depends(get_current_user)):
     chunks = await search_chunks(kb_id, user.user_id, req.query, top_k=req.top_k)
     return {"results": chunks}
+
+
+@router.post("/{kb_id}/search-hybrid")
+async def search_kb_hybrid(kb_id: str, req: SearchRequest, user: User = Depends(get_current_user)):
+    chunks = await rerank_chunks(kb_id, user.user_id, req.query, top_k=req.top_k)
+    return {"results": chunks}
+
+
+async def rerank_chunks(kb_id: str, user_id: str, query: str, top_k: int = 3, candidate_pool: int = 10) -> List[Dict[str, Any]]:
+    """Hybrid: BM25 over all chunks → top-N candidates → LLM rerank → top-k."""
+    from core import chat_completion
+    candidates = await search_chunks(kb_id, user_id, query, top_k=candidate_pool)
+    if len(candidates) <= top_k:
+        return candidates
+
+    listing = "\n\n".join([
+        f"[{i}] [{c['doc_name']}] {c['content'][:600]}"
+        for i, c in enumerate(candidates)
+    ])
+    rerank_prompt = (
+        f"Query: {query}\n\nCandidate passages:\n{listing}\n\n"
+        f"Return ONLY a JSON array of the {top_k} most relevant passage indices in order, "
+        f"e.g., [3,0,7]. No explanation, no markdown, no other text."
+    )
+    try:
+        response = chat_completion(
+            [{"role": "user", "content": rerank_prompt}],
+            stream=False,
+        )
+        content = (response.choices[0].message.content or "").strip()
+        m = re.search(r"\[[\d\s,]+\]", content)
+        if m:
+            import json as _json
+            order = _json.loads(m.group(0))
+            picked = []
+            seen = set()
+            for idx in order:
+                if isinstance(idx, int) and 0 <= idx < len(candidates) and idx not in seen:
+                    picked.append(candidates[idx])
+                    seen.add(idx)
+                    if len(picked) >= top_k:
+                        break
+            if picked:
+                return picked
+    except Exception as e:
+        logger.info(f"rerank failed: {e}")
+    return candidates[:top_k]

@@ -26,6 +26,7 @@ export default function AgentChat() {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState([]); // for autonomous agents during a run
+  const [streamingText, setStreamingText] = useState("");
   const [loading, setLoading] = useState(true);
   const scrollRef = useRef(null);
 
@@ -38,21 +39,53 @@ export default function AgentChat() {
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages, steps, running]);
+  }, [messages, steps, running, streamingText]);
 
   const sendConversational = async (prompt) => {
     setRunning(true);
+    setStreamingText("");
     const tmp = { id: "tmp_" + Date.now(), agent_id: id, role: "user", content: prompt, created_at: new Date().toISOString() };
     setMessages((p) => [...p, tmp]);
     try {
-      const { data } = await apiClient.post(`/agents/${id}/chat`, { prompt });
-      const refresh = await apiClient.get(`/agents/${id}/messages`);
-      setMessages(refresh.data);
+      const response = await fetch(`${API}/agents/${id}/chat-stream`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          if (!part.trim().startsWith("data:")) continue;
+          try {
+            const evt = JSON.parse(part.slice(part.indexOf("data:") + 5).trim());
+            if (evt.type === "user") {
+              setMessages((p) => p.map((m) => (m.id === tmp.id ? evt.message : m)));
+            } else if (evt.type === "chunk") {
+              setStreamingText((prev) => prev + evt.text);
+            } else if (evt.type === "done") {
+              setMessages((p) => [...p, evt.message]);
+              setStreamingText("");
+            } else if (evt.type === "error") {
+              throw new Error(evt.detail);
+            }
+          } catch {}
+        }
+      }
     } catch (e) {
-      toast.error(e.response?.data?.detail || "Chat failed");
+      toast.error(e.message || "Chat failed");
       setMessages((p) => p.filter((m) => m.id !== tmp.id));
     } finally {
       setRunning(false);
+      setStreamingText("");
     }
   };
 
@@ -178,8 +211,20 @@ export default function AgentChat() {
               <div className="w-7 h-7 flex items-center justify-center flex-shrink-0" style={{ background: meta.color }}>
                 <Sparkle size={14} weight="fill" color="#050505" />
               </div>
-              <div className="font-mono text-sm text-[#A1A1AA] pt-1.5">
-                <span className="ascii-pulse">▓▓▓▓▓░░░░░</span> thinking<span className="cursor-blink ml-1">█</span>
+              <div className="flex-1 pt-1.5 min-w-0">
+                {streamingText ? (
+                  <>
+                    <div className="font-mono text-[10px] uppercase tracking-[0.2em] mb-2" style={{ color: meta.color }}>/ assistant</div>
+                    <div className="text-sm text-[#F5F5F5] whitespace-pre-wrap break-words leading-relaxed">
+                      {streamingText}
+                      <span className="cursor-blink ml-0.5" style={{ color: meta.color }}>█</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="font-mono text-sm text-[#A1A1AA]">
+                    <span className="ascii-pulse">▓▓▓▓▓░░░░░</span> thinking<span className="cursor-blink ml-1">█</span>
+                  </div>
+                )}
               </div>
             </div>
           )}

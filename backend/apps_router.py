@@ -180,12 +180,12 @@ def build_chat_messages(history: List[Message], new_prompt: str, knowledge_conte
 
 
 async def get_kb_context(kb_id: Optional[str], query: str, user_id: str) -> str:
-    """Fetch top-3 chunks from a knowledge base."""
+    """Fetch top-3 chunks via hybrid rerank for app creator KB context."""
     if not kb_id:
         return ""
     try:
-        from knowledge_router import search_chunks
-        chunks = await search_chunks(kb_id, user_id, query, top_k=3)
+        from knowledge_router import rerank_chunks
+        chunks = await rerank_chunks(kb_id, user_id, query, top_k=3)
         if not chunks:
             return ""
         return "\n\n".join([f"[{c['doc_name']}] {c['content']}" for c in chunks])
