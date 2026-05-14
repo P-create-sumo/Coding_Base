@@ -32,6 +32,9 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Fix ajv
+        run: npm install ajv@^8 --legacy-peer-deps
+
       - name: Build
         env:
           REACT_APP_BACKEND_URL: https://coding-base-backend.onrender.com
