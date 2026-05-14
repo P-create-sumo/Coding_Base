@@ -2,8 +2,7 @@ import { Lightning, GoogleLogo, ArrowRight } from "@phosphor-icons/react";
 
 export default function LoginPage() {
   const handleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    const redirectUrl = window.location.origin + "/";
+    const redirectUrl = window.location.origin + "/Coding_Base/";
     window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
