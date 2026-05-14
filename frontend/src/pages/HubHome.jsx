@@ -1,6 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { useAuth } from "@/lib/auth";
-import { Lightning, Code, Robot, BookOpen, ArrowRight, SignOut } from "@phosphor-icons/react";
+import { Lightning, Code, Robot, BookOpen, ArrowRight } from "@phosphor-icons/react";
 import { useState, useEffect } from "react";
 import apiClient from "@/lib/api";
 
@@ -44,7 +43,6 @@ const FEATURES = [
 ];
 
 export default function HubHome() {
-  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [counts, setCounts] = useState({ apps: 0, agents: 0, knowledge: 0 });
 
@@ -73,7 +71,7 @@ export default function HubHome() {
               <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA] leading-none mt-0.5">/ ai platform</div>
             </div>
           </Link>
-          <UserMenu user={user} onLogout={logout} />
+
         </div>
       </header>
 
