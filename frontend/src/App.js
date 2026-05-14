@@ -49,7 +49,7 @@ function AppRouter() {
 function App() {
   return (
     <div className="App">
-      <BrowserRouter>
+      <BrowserRouter basename="/Coding_Base">
         <AuthProvider>
           <AppRouter />
         </AuthProvider>
