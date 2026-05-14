@@ -71,7 +71,6 @@ export default function HubHome() {
               <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA] leading-none mt-0.5">/ ai platform</div>
             </div>
           </Link>
-
         </div>
       </header>
 
@@ -81,7 +80,7 @@ export default function HubHome() {
           <span>v2.0 / three-in-one ai workshop</span>
         </div>
         <h1 className="font-heading text-4xl sm:text-5xl lg:text-6xl tracking-tighter font-black leading-[0.95] max-w-4xl">
-          Welcome back, <span className="text-[#FF3B30]">{user?.name?.split(" ")[0] || "builder"}</span>.<br />
+          Welcome, <span className="text-[#FF3B30]">builder</span>.<br />
           Pick your tool.
         </h1>
         <p className="mt-6 text-base md:text-lg text-[#A1A1AA] max-w-2xl leading-relaxed">
@@ -149,46 +148,6 @@ export default function HubHome() {
           © {new Date().getFullYear()} FORGE / built with claude sonnet 4.5
         </div>
       </footer>
-    </div>
-  );
-}
-
-function UserMenu({ user, onLogout }) {
-  const [open, setOpen] = useState(false);
-  if (!user) return null;
-  const initial = user.name?.[0]?.toUpperCase() || "U";
-  return (
-    <div className="relative">
-      <button
-        data-testid="user-menu-btn"
-        onClick={() => setOpen(!open)}
-        className="w-9 h-9 bg-[#121212] border border-[#2A2A2A] hover:border-[#FF3B30] flex items-center justify-center overflow-hidden"
-        title={user.name}
-      >
-        {user.picture ? (
-          <img src={user.picture} alt={user.name} className="w-full h-full object-cover" />
-        ) : (
-          <span className="font-bold">{initial}</span>
-        )}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 mt-2 w-64 bg-[#121212] border border-[#2A2A2A] z-50 slide-up">
-            <div className="p-4 border-b border-[#2A2A2A]">
-              <div className="font-bold text-sm truncate">{user.name}</div>
-              <div className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#A1A1AA] truncate mt-1">{user.email}</div>
-            </div>
-            <button
-              data-testid="logout-btn"
-              onClick={onLogout}
-              className="w-full px-4 py-3 text-left text-sm hover:bg-[#1A1A1A] hover:text-[#FF3B30] flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.2em]"
-            >
-              <SignOut size={12} weight="bold" /> log out
-            </button>
-          </div>
-        </>
-      )}
     </div>
   );
 }
