@@ -11,7 +11,8 @@ import logging
 from datetime import datetime, timezone
 
 import litellm
-from emergentintegrations.llm.utils import get_integration_proxy_url
+# emergentintegrations removed — using direct OpenAI API
+def get_integration_proxy_url(): return 'https://api.openai.com'
 
 
 ROOT_DIR = Path(__file__).parent
